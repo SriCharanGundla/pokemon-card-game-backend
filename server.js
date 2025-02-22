@@ -38,6 +38,7 @@ async function fetchRandomPokemon() {
       defense: pokemon.stats[2].base_stat,
       speed: pokemon.stats[5].base_stat,
     },
+    type: pokemon.types[0].type.name,
   };
 }
 
@@ -74,6 +75,19 @@ class GameRoom {
     if (player) {
       activePlayers.delete(player.name.toLowerCase());
       this.players.delete(playerId);
+    }
+  }
+
+  clearPlayerName(playerId) {
+    const player = this.players.get(playerId);
+    if (player) {
+      activePlayers.delete(player.name.toLowerCase());
+    }
+  }
+
+  clearAllPlayerNames() {
+    for (const [playerId, player] of this.players) {
+      activePlayers.delete(player.name.toLowerCase());
     }
   }
 
@@ -120,6 +134,8 @@ class GameRoom {
         winners.push(playerId);
       }
     }
+
+    // Update scores and check for game winners
     winners.forEach((winnerId) => {
       const player = this.players.get(winnerId);
       player.score++;
@@ -127,7 +143,21 @@ class GameRoom {
         this.winners.push(winnerId);
       }
     });
-    return winners;
+
+    // Return complete game state
+    return {
+      roundWinners: winners,
+      gameWinners: this.winners,
+      players: Array.from(this.players.entries()).map(([id, player]) => ({
+        id,
+        name: player.name,
+        pokemon: player.pokemon,
+        score: player.score,
+        isPicker: id === this.currentPicker,
+        isCreator: player.isCreator,
+      })),
+      gameEnded: this.winners.length > 0,
+    };
   }
 
   async startGame() {
@@ -202,24 +232,27 @@ io.on("connection", (socket) => {
     io.to(roomCode).emit("roundStarted", gameState);
   });
 
+  // In the socket.on("selectStat") handler, update to use new state:
   socket.on("selectStat", ({ roomCode, stat }) => {
     const gameRoom = gameRooms.get(roomCode);
     if (!gameRoom || gameRoom.currentPicker !== socket.id) return;
-    const roundWinners = gameRoom.evaluateRound(stat);
+
+    const gameState = gameRoom.evaluateRound(stat);
+
+    // If game has ended, clear all player names
+    if (gameState.gameEnded) {
+      gameRoom.clearAllPlayerNames();
+    }
+
     io.to(roomCode).emit("roundComplete", {
-      winners: roundWinners,
-      gameWinners: gameRoom.winners,
+      winners: gameState.roundWinners,
+      gameWinners: gameState.gameWinners,
       stat,
-      players: Array.from(gameRoom.players.entries()).map(([id, player]) => ({
-        id,
-        name: player.name,
-        pokemon: player.pokemon,
-        score: player.score,
-        isPicker: id === gameRoom.currentPicker,
-        isCreator: player.isCreator,
-      })),
+      players: gameState.players,
+      gameEnded: gameState.gameEnded,
     });
-    if (gameRoom.winners.length === 0) {
+
+    if (!gameState.gameEnded) {
       setTimeout(async () => {
         const newState = await gameRoom.startNewRound();
         io.to(roomCode).emit("roundStarted", newState);
@@ -243,9 +276,15 @@ io.on("connection", (socket) => {
   socket.on("leaveRoom", ({ roomCode }) => {
     const gameRoom = gameRooms.get(roomCode);
     if (!gameRoom) return;
+
+    // Clear the leaving player's name
+    gameRoom.clearPlayerName(socket.id);
     gameRoom.players.delete(socket.id);
+
     socket.leave(roomCode);
+
     if (gameRoom.players.size === 0) {
+      // If room is empty, delete the room
       gameRooms.delete(roomCode);
     } else {
       io.to(roomCode).emit("playerLeft", {
@@ -262,7 +301,10 @@ io.on("connection", (socket) => {
   socket.on("kickPlayer", ({ roomCode, playerId }) => {
     const gameRoom = gameRooms.get(roomCode);
     if (!gameRoom || gameRoom.creator !== socket.id) return;
+
+    gameRoom.clearPlayerName(playerId);
     gameRoom.removePlayer(playerId);
+
     io.to(roomCode).emit("playerKicked", {
       kickedId: playerId,
       players: Array.from(gameRoom.players.entries()).map(([id, player]) => ({
