@@ -1,0 +1,65 @@
+### Node.js ###
+# Dependency directories
+node_modules/
+npm-debug.log
+yarn-error.log
+pnpm-debug.log
+
+# Logs
+logs/
+*.log
+*.log.*
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+
+# Binaries
+bin/
+build/
+dist/
+
+# Environment variables
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+
+# Cache
+.cache/
+.nyc_output/
+coverage/
+
+# IDE/editor specific files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Miscellaneous
+*.swp
+*.swo
+
+# Docker
+docker-compose.override.yml
+.dockerignore
+
+# TypeScript
+*.tsbuildinfo
+
+# Prisma
+prisma/migrations/
+
+# Firebase
+.firebase/
+
+# Local development overrides
+local.settings.json
+secrets.json
