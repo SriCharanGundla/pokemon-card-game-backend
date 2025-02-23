@@ -98,7 +98,11 @@ class GameRoom {
 
   validateMaxWinners(maxWinners) {
     const playerCount = this.players.size;
-    // Maximum winners cannot exceed playerCount - 1
+    // For 2 players, we should allow 1 winner
+    // For 3+ players, maximum winners cannot exceed playerCount - 1
+    if (playerCount <= 2) {
+      return 1;
+    }
     return Math.min(maxWinners, Math.min(playerCount - 1, 3));
   }
 
@@ -206,16 +210,16 @@ class GameRoom {
       const winner = this.players.get(roundWinners[0]);
       if (winner) {
         winner.score++;
-        if (
-          winner.score >= this.settings.roundsToWin &&
-          !this.winners.includes(roundWinners[0])
-        ) {
-          this.winners.push(roundWinners[0]);
+        // Only add to winners if they've reached the required score
+        if (winner.score >= this.settings.roundsToWin) {
+          if (!this.winners.includes(roundWinners[0])) {
+            this.winners.push(roundWinners[0]);
+          }
         }
       }
     }
 
-    // Check if game should end
+    // Check if game should end - now properly considers required wins
     const gameEnded = this.winners.length >= this.settings.maxWinners;
 
     return {
