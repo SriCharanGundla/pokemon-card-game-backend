@@ -47,12 +47,17 @@ class GameRoom {
     this.players = new Map();
     this.currentRound = 1;
     this.currentPicker = null;
-    this.settings = settings; // roundsToWin will be updated via updateSettings
+    this.settings = {
+      roundsToWin: settings.roundsToWin || 3,
+      maxWinners: this.validateMaxWinners(settings.maxWinners || 1),
+    };
     this.winners = [];
     this.creator = null;
-    // For round-robin rotation
     this.pickerCycle = [];
     this.pickerIndex = 0;
+    this.inTieBreaker = false;
+    this.tieBreakPlayers = [];
+    this.lastSelectedStat = null;
   }
 
   addPlayer(playerId, playerName, isCreator = false) {
@@ -91,21 +96,68 @@ class GameRoom {
     }
   }
 
+  validateMaxWinners(maxWinners) {
+    const playerCount = this.players.size;
+    // Maximum winners cannot exceed playerCount - 1
+    return Math.min(maxWinners, Math.min(playerCount - 1, 3));
+  }
+
+  updateSettings(settings) {
+    if (settings.maxWinners !== undefined) {
+      settings.maxWinners = this.validateMaxWinners(settings.maxWinners);
+    }
+    this.settings = { ...this.settings, ...settings };
+  }
+
+  getActivePlayers() {
+    return Array.from(this.players.keys()).filter(
+      (id) => !this.winners.includes(id)
+    );
+  }
+
+  getNextPicker() {
+    const activePlayers = this.getActivePlayers();
+    if (activePlayers.length === 0) return null;
+
+    // If current picker is a winner or doesn't exist, find next valid picker
+    if (!this.currentPicker || this.winners.includes(this.currentPicker)) {
+      return activePlayers[0];
+    }
+
+    // Find current picker's index in active players
+    const currentIndex = activePlayers.indexOf(this.currentPicker);
+    if (currentIndex === -1) return activePlayers[0];
+
+    // Get next picker, wrapping around to start if needed
+    return activePlayers[(currentIndex + 1) % activePlayers.length];
+  }
+
   async startNewRound() {
-    if (this.currentRound === 1) {
-      this.pickerCycle = Array.from(this.players.keys());
-      this.pickerIndex = Math.floor(Math.random() * this.pickerCycle.length);
-      this.currentPicker = this.pickerCycle[this.pickerIndex];
+    if (this.inTieBreaker) {
+      // In tie breaker, regenerate Pokemon only for tie break players
+      for (const playerId of this.tieBreakPlayers) {
+        const player = this.players.get(playerId);
+        if (player) {
+          player.pokemon = await fetchRandomPokemon();
+        }
+      }
     } else {
-      this.pickerIndex = (this.pickerIndex + 1) % this.pickerCycle.length;
-      this.currentPicker = this.pickerCycle[this.pickerIndex];
+      // Regular round - update picker and generate Pokemon for active players
+      this.currentPicker = this.getNextPicker();
+
+      // Generate Pokemon only for non-winner players
+      const activePlayers = this.getActivePlayers();
+      for (const playerId of activePlayers) {
+        const player = this.players.get(playerId);
+        player.pokemon = await fetchRandomPokemon();
+      }
     }
-    for (const [playerId, player] of this.players.entries()) {
-      player.pokemon = await fetchRandomPokemon();
-    }
+
     const state = {
-      currentRound: this.currentRound, // use "currentRound" for consistency
+      currentRound: this.currentRound,
       currentPicker: this.currentPicker,
+      inTieBreaker: this.inTieBreaker,
+      tieBreakPlayers: this.tieBreakPlayers,
       players: Array.from(this.players.entries()).map(([id, player]) => ({
         id,
         name: player.name,
@@ -113,40 +165,61 @@ class GameRoom {
         score: player.score,
         isPicker: id === this.currentPicker,
         isCreator: player.isCreator,
+        isWinner: this.winners.includes(id),
       })),
+      winners: this.winners, // Add winners to state
     };
-    this.currentRound++;
+
+    if (!this.inTieBreaker) {
+      this.currentRound++;
+    }
     return state;
   }
 
   evaluateRound(selectedStat) {
+    this.lastSelectedStat = selectedStat;
     let highestValue = -1;
-    let winners = [];
-    for (const [playerId, player] of this.players.entries()) {
+    let roundWinners = [];
+
+    // Determine which players to evaluate
+    const playersToEvaluate = this.inTieBreaker
+      ? this.tieBreakPlayers
+      : this.getActivePlayers();
+
+    // Find highest value and its holders
+    for (const playerId of playersToEvaluate) {
+      const player = this.players.get(playerId);
       const value =
         selectedStat === "hp"
           ? player.pokemon.hp
           : player.pokemon.stats[selectedStat];
       if (value > highestValue) {
         highestValue = value;
-        winners = [playerId];
+        roundWinners = [playerId];
       } else if (value === highestValue) {
-        winners.push(playerId);
+        roundWinners.push(playerId);
       }
     }
 
-    // Update scores and check for game winners
-    winners.forEach((winnerId) => {
-      const player = this.players.get(winnerId);
-      player.score++;
-      if (player.score >= this.settings.roundsToWin) {
-        this.winners.push(winnerId);
+    // Update winner logic
+    if (!this.inTieBreaker) {
+      const winner = this.players.get(roundWinners[0]);
+      if (winner) {
+        winner.score++;
+        if (
+          winner.score >= this.settings.roundsToWin &&
+          !this.winners.includes(roundWinners[0])
+        ) {
+          this.winners.push(roundWinners[0]);
+        }
       }
-    });
+    }
 
-    // Return complete game state
+    // Check if game should end
+    const gameEnded = this.winners.length >= this.settings.maxWinners;
+
     return {
-      roundWinners: winners,
+      roundWinners,
       gameWinners: this.winners,
       players: Array.from(this.players.entries()).map(([id, player]) => ({
         id,
@@ -156,14 +229,22 @@ class GameRoom {
         isPicker: id === this.currentPicker,
         isCreator: player.isCreator,
       })),
-      gameEnded: this.winners.length > 0,
+      winners: this.winners,
+      gameEnded,
+      stat: selectedStat,
     };
   }
 
   async startGame() {
     this.currentRound = 1;
     this.winners = [];
-    this.players.forEach((player) => (player.score = 0));
+    this.inTieBreaker = false;
+    this.tieBreakPlayers = [];
+    this.lastSelectedStat = null;
+    this.players.forEach((player) => {
+      player.score = 0;
+      player.pokemon = null;
+    });
     return this.startNewRound();
   }
 }
