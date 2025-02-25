@@ -362,6 +362,9 @@ io.on("connection", (socket) => {
     const gameRoom = gameRooms.get(roomCode);
     if (!gameRoom) return;
 
+    // Get the leaving player's data before removing
+    const leavingPlayer = gameRoom.players.get(socket.id);
+
     // Clear the leaving player's name
     gameRoom.clearPlayerName(socket.id);
     gameRoom.players.delete(socket.id);
@@ -374,6 +377,7 @@ io.on("connection", (socket) => {
     } else {
       io.to(roomCode).emit("playerLeft", {
         playerId: socket.id,
+        leftPlayer: leavingPlayer ? { name: leavingPlayer.name } : null,
         players: Array.from(gameRoom.players.entries()).map(([id, player]) => ({
           id,
           name: player.name,
