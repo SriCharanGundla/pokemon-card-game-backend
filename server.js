@@ -137,6 +137,38 @@ class GameRoom {
     return activePlayers[(currentIndex + 1) % activePlayers.length];
   }
 
+  // Add to the GameRoom class in your server file
+  transferCreator(oldCreatorId, newCreatorId) {
+    const oldCreator = this.players.get(oldCreatorId);
+    const newCreator = this.players.get(newCreatorId);
+
+    if (!oldCreator || !newCreator || oldCreatorId !== this.creator) {
+      return false; // Cannot transfer if either player doesn't exist or if requester isn't creator
+    }
+
+    // Update creator status
+    oldCreator.isCreator = false;
+    newCreator.isCreator = true;
+    this.creator = newCreatorId;
+
+    return true;
+  }
+
+  assignNewCreator() {
+    // If there's no creator or the creator has left, assign a new one
+    if (
+      this.players.size > 0 &&
+      (!this.creator || !this.players.has(this.creator))
+    ) {
+      const nextCreatorId = Array.from(this.players.keys())[0];
+      const nextCreator = this.players.get(nextCreatorId);
+      nextCreator.isCreator = true;
+      this.creator = nextCreatorId;
+      return nextCreatorId;
+    }
+    return null;
+  }
+
   async startNewRound() {
     if (this.inTieBreaker) {
       // In tie breaker, regenerate Pokemon only for tie break players
@@ -273,6 +305,7 @@ io.on("connection", (socket) => {
     });
   });
 
+  // Update the joinRoom event handler
   socket.on("joinRoom", ({ roomCode, playerName }) => {
     const gameRoom = gameRooms.get(roomCode);
     if (!gameRoom) {
@@ -281,31 +314,127 @@ io.on("connection", (socket) => {
     }
 
     // Check for name duplicates within this room
-    if (gameRoom.hasPlayerName(playerName)) {
-      socket.emit("error", "This name is already taken in this room");
-      return;
+    let existingPlayerId = null;
+    let isNameDuplicate = false;
+
+    for (const [id, player] of gameRoom.players.entries()) {
+      if (player.name.toLowerCase() === playerName.toLowerCase()) {
+        existingPlayerId = id;
+        isNameDuplicate = true;
+        break;
+      }
     }
 
-    const player = gameRoom.addPlayer(socket.id, playerName);
-    socket.join(roomCode);
-    socket.emit("gameStateUpdate", {
-      roomCode,
-      players: Array.from(gameRoom.players.entries()).map(([id, p]) => ({
-        id,
-        name: p.name,
-        isCreator: p.isCreator,
-        score: p.score,
-      })),
-      phase: "in-room",
-    });
-    io.to(roomCode).emit("playerJoined", {
-      players: Array.from(gameRoom.players.entries()).map(([id, p]) => ({
-        id,
-        name: p.name,
-        isCreator: p.isCreator,
-        score: p.score,
-      })),
-    });
+    // Case 1: Name exists in the room
+    if (isNameDuplicate) {
+      // CRITICAL FIX: We need a reliable way to determine if this is actually a reconnection
+      // In a real reconnection scenario, the previous socket for this player would be disconnected
+      // Check if the existing socket is still connected by attempting to get its handshake
+      const io_sockets = io.sockets.sockets;
+      const existingSocketStillConnected = io_sockets.has(existingPlayerId);
+
+      // If the existing socket is still connected, this is a duplicate name attempt from a different client
+      if (existingSocketStillConnected) {
+        socket.emit(
+          "error",
+          "Name already exists in this room. Please choose a different name."
+        );
+        return;
+      } else {
+        // This is a genuine reconnection - the original socket is disconnected
+        const player = gameRoom.players.get(existingPlayerId);
+
+        // Transfer player data to new socket ID
+        gameRoom.clearPlayerName(existingPlayerId);
+        gameRoom.removePlayer(existingPlayerId);
+
+        // Preserve player attributes, especially isCreator status
+        gameRoom.addPlayer(socket.id, playerName, player.isCreator);
+
+        // Update creator reference if needed
+        if (player.isCreator) {
+          gameRoom.creator = socket.id;
+        }
+
+        // Preserve score and pokemon if we're in a game
+        const newPlayer = gameRoom.players.get(socket.id);
+        newPlayer.score = player.score;
+        newPlayer.pokemon = player.pokemon;
+
+        socket.join(roomCode);
+
+        // Notify everyone about the reconnection
+        io.to(roomCode).emit("playerReconnected", {
+          oldId: existingPlayerId,
+          newId: socket.id,
+          players: Array.from(gameRoom.players.entries()).map(([id, p]) => ({
+            id,
+            name: p.name,
+            isCreator: p.isCreator,
+            score: p.score,
+          })),
+        });
+
+        // Send current game state to reconnected player
+        const gamePhase = gameRoom.currentRound > 1 ? "playing" : "in-room";
+        socket.emit("gameStateUpdate", {
+          roomCode,
+          players: Array.from(gameRoom.players.entries()).map(([id, p]) => ({
+            id,
+            name: p.name,
+            isCreator: p.isCreator,
+            score: p.score,
+            pokemon: p.pokemon,
+          })),
+          currentRound: gameRoom.currentRound,
+          currentPicker: gameRoom.currentPicker,
+          winners: gameRoom.winners,
+          phase: gamePhase,
+        });
+      }
+    } else {
+      // Case 2: Normal join process for new player with unique name
+      const player = gameRoom.addPlayer(socket.id, playerName);
+      socket.join(roomCode);
+      socket.emit("gameStateUpdate", {
+        roomCode,
+        players: Array.from(gameRoom.players.entries()).map(([id, p]) => ({
+          id,
+          name: p.name,
+          isCreator: p.isCreator,
+          score: p.score,
+        })),
+        phase: "in-room",
+      });
+      io.to(roomCode).emit("playerJoined", {
+        players: Array.from(gameRoom.players.entries()).map(([id, p]) => ({
+          id,
+          name: p.name,
+          isCreator: p.isCreator,
+          score: p.score,
+        })),
+      });
+    }
+  });
+
+  socket.on("transferCreator", ({ roomCode, newCreatorId }) => {
+    const gameRoom = gameRooms.get(roomCode);
+    if (!gameRoom) return;
+
+    // Try to transfer creator status
+    const success = gameRoom.transferCreator(socket.id, newCreatorId);
+    if (success) {
+      io.to(roomCode).emit("creatorTransferred", {
+        previousCreatorId: socket.id,
+        newCreatorId,
+        players: Array.from(gameRoom.players.entries()).map(([id, player]) => ({
+          id,
+          name: player.name,
+          score: player.score,
+          isCreator: player.isCreator,
+        })),
+      });
+    }
   });
 
   socket.on("startGame", async ({ roomCode }) => {
@@ -362,10 +491,11 @@ io.on("connection", (socket) => {
 
     // Get the leaving player's data before removing
     const leavingPlayer = gameRoom.players.get(socket.id);
+    const wasCreator = leavingPlayer?.isCreator;
 
     // Clear the leaving player's name
     gameRoom.clearPlayerName(socket.id);
-    gameRoom.players.delete(socket.id);
+    gameRoom.removePlayer(socket.id);
 
     socket.leave(roomCode);
 
@@ -373,13 +503,21 @@ io.on("connection", (socket) => {
       // If room is empty, delete the room
       gameRooms.delete(roomCode);
     } else {
+      // If the creator left, assign a new one
+      let newCreatorId = null;
+      if (wasCreator) {
+        newCreatorId = gameRoom.assignNewCreator();
+      }
+
       io.to(roomCode).emit("playerLeft", {
         playerId: socket.id,
         leftPlayer: leavingPlayer ? { name: leavingPlayer.name } : null,
+        newCreatorId,
         players: Array.from(gameRoom.players.entries()).map(([id, player]) => ({
           id,
           name: player.name,
           score: player.score,
+          isCreator: player.isCreator,
         })),
       });
     }
@@ -404,12 +542,38 @@ io.on("connection", (socket) => {
   });
 
   socket.on("disconnect", () => {
-    for (const room of gameRooms.values()) {
+    // Check all game rooms for the disconnected player
+    for (const [roomCode, room] of gameRooms.entries()) {
       const player = room.players.get(socket.id);
       if (player) {
-        activePlayers.delete(player.name.toLowerCase());
+        const wasCreator = player.isCreator;
+        room.clearPlayerName(socket.id);
         room.removePlayer(socket.id);
-        break;
+
+        // If room is empty, delete it
+        if (room.players.size === 0) {
+          gameRooms.delete(roomCode);
+        } else {
+          // If the creator left, assign a new one
+          let newCreatorId = null;
+          if (wasCreator) {
+            newCreatorId = room.assignNewCreator();
+          }
+
+          // Notify remaining players
+          io.to(roomCode).emit("playerLeft", {
+            playerId: socket.id,
+            leftPlayer: player ? { name: player.name } : null,
+            newCreatorId,
+            players: Array.from(room.players.entries()).map(([id, p]) => ({
+              id,
+              name: p.name,
+              score: p.score,
+              isCreator: p.isCreator,
+            })),
+          });
+        }
+        break; // Player found and handled, exit the loop
       }
     }
   });
