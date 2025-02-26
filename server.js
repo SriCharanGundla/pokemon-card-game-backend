@@ -17,8 +17,6 @@ const io = new Server(server, {
 
 // Store active game rooms
 const gameRooms = new Map();
-// Store active players (by name, lowercased)
-const activePlayers = new Set();
 
 const checkNameExists = (name) => {
   return activePlayers.has(name.toLowerCase());
@@ -58,6 +56,11 @@ class GameRoom {
     this.inTieBreaker = false;
     this.tieBreakPlayers = [];
     this.lastSelectedStat = null;
+    this.playerNames = new Set();
+  }
+
+  hasPlayerName(name) {
+    return this.playerNames.has(name.toLowerCase());
   }
 
   addPlayer(playerId, playerName, isCreator = false) {
@@ -68,7 +71,7 @@ class GameRoom {
       isCreator,
     };
     this.players.set(playerId, player);
-    activePlayers.add(playerName.toLowerCase());
+    this.playerNames.add(playerName.toLowerCase()); // Add to this room's names
     if (isCreator) {
       this.creator = playerId;
     }
@@ -78,7 +81,7 @@ class GameRoom {
   removePlayer(playerId) {
     const player = this.players.get(playerId);
     if (player) {
-      activePlayers.delete(player.name.toLowerCase());
+      this.playerNames.delete(player.name.toLowerCase());
       this.players.delete(playerId);
     }
   }
@@ -86,14 +89,12 @@ class GameRoom {
   clearPlayerName(playerId) {
     const player = this.players.get(playerId);
     if (player) {
-      activePlayers.delete(player.name.toLowerCase());
+      this.playerNames.delete(player.name.toLowerCase());
     }
   }
 
   clearAllPlayerNames() {
-    for (const [playerId, player] of this.players) {
-      activePlayers.delete(player.name.toLowerCase());
-    }
+    this.playerNames.clear();
   }
 
   validateMaxWinners(maxWinners) {
@@ -254,16 +255,6 @@ class GameRoom {
 }
 
 io.on("connection", (socket) => {
-  socket.on("addName", (name, callback) => {
-    activePlayers.add(name.toLowerCase());
-    callback(true);
-  });
-
-  socket.on("checkName", (name, callback) => {
-    const exists = checkNameExists(name);
-    callback(exists);
-  });
-
   socket.on("updateSettings", ({ roomCode, settings }) => {
     const gameRoom = gameRooms.get(roomCode);
     if (!gameRoom) return;
@@ -288,6 +279,13 @@ io.on("connection", (socket) => {
       socket.emit("error", "Room not found");
       return;
     }
+
+    // Check for name duplicates within this room
+    if (gameRoom.hasPlayerName(playerName)) {
+      socket.emit("error", "This name is already taken in this room");
+      return;
+    }
+
     const player = gameRoom.addPlayer(socket.id, playerName);
     socket.join(roomCode);
     socket.emit("gameStateUpdate", {
