@@ -205,6 +205,7 @@ class GameRoom {
         isWinner: this.winners.includes(id),
       })),
       winners: this.winners, // Add winners to state
+      gameEnded: this.winners.length >= this.settings.maxWinners, // Add gameEnded
     };
 
     if (!this.inTieBreaker) {
