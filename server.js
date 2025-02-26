@@ -57,6 +57,7 @@ class GameRoom {
     this.tieBreakPlayers = [];
     this.lastSelectedStat = null;
     this.playerNames = new Set();
+    this.nextRoundTimeoutId = null;
   }
 
   hasPlayerName(name) {
@@ -118,6 +119,13 @@ class GameRoom {
     return Array.from(this.players.keys()).filter(
       (id) => !this.winners.includes(id)
     );
+  }
+
+  clearNextRoundTimeout() {
+    if (this.nextRoundTimeoutId) {
+      clearTimeout(this.nextRoundTimeoutId);
+      this.nextRoundTimeoutId = null;
+    }
   }
 
   getNextPicker() {
@@ -418,6 +426,20 @@ io.on("connection", (socket) => {
     }
   });
 
+  socket.on("nextRound", async ({ roomCode }) => {
+    const gameRoom = gameRooms.get(roomCode);
+    if (!gameRoom) return;
+
+    if (socket.id !== gameRoom.currentPicker) {
+      socket.emit("error", "Only the current picker can start the next round");
+      return;
+    }
+
+    gameRoom.clearNextRoundTimeout();
+    const newState = await gameRoom.startNewRound();
+    io.to(roomCode).emit("roundStarted", newState);
+  });
+
   socket.on("transferCreator", ({ roomCode, newCreatorId }) => {
     const gameRoom = gameRooms.get(roomCode);
     if (!gameRoom) return;
@@ -466,10 +488,11 @@ io.on("connection", (socket) => {
     });
 
     if (!gameState.gameEnded) {
-      setTimeout(async () => {
+      gameRoom.clearNextRoundTimeout();
+      gameRoom.nextRoundTimeoutId = setTimeout(async () => {
         const newState = await gameRoom.startNewRound();
         io.to(roomCode).emit("roundStarted", newState);
-      }, 3000);
+      }, 30000);
     }
   });
 
