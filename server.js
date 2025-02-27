@@ -70,6 +70,7 @@ class GameRoom {
       score: 0,
       pokemon: null,
       isCreator,
+      isBackInRoom: true, // default to false. We'll flip to true if they're truly in the "in-room" lobby.
     };
     this.players.set(playerId, player);
     this.playerNames.add(playerName.toLowerCase()); // Add to this room's names
@@ -264,6 +265,15 @@ class GameRoom {
     // Check if game should end - now properly considers required wins
     const gameEnded = this.winners.length >= this.settings.maxWinners;
 
+    // if (gameState.gameEnded) {
+    //   // Mark all players as not in the room
+    //   for (const [id, p] of this.players.entries()) {
+    //     p.isBackInRoom = false;
+    //   }
+    //   // Clear all playerNames if you want (as you already do), or keep them
+    //   // this.clearAllPlayerNames();
+    // }
+
     return {
       roundWinners,
       gameWinners: this.winners,
@@ -294,7 +304,6 @@ class GameRoom {
     return this.startNewRound();
   }
 }
-
 io.on("connection", (socket) => {
   socket.on("updateSettings", ({ roomCode, settings }) => {
     const gameRoom = gameRooms.get(roomCode);
@@ -310,7 +319,15 @@ io.on("connection", (socket) => {
     socket.join(roomCode);
     socket.emit("roomCreated", {
       roomCode,
-      players: [{ id: socket.id, name: playerName, isCreator: true, score: 0 }],
+      players: [
+        {
+          id: socket.id,
+          name: playerName,
+          isCreator: true,
+          score: 0,
+          isBackInRoom: player.isBackInRoom,
+        },
+      ],
     });
   });
 
@@ -381,6 +398,7 @@ io.on("connection", (socket) => {
             name: p.name,
             isCreator: p.isCreator,
             score: p.score,
+            isBackInRoom: p.isBackInRoom,
           })),
         });
 
@@ -394,6 +412,7 @@ io.on("connection", (socket) => {
             isCreator: p.isCreator,
             score: p.score,
             pokemon: p.pokemon,
+            isBackInRoom: p.isBackInRoom,
           })),
           currentRound: gameRoom.currentRound,
           currentPicker: gameRoom.currentPicker,
@@ -412,6 +431,7 @@ io.on("connection", (socket) => {
           name: p.name,
           isCreator: p.isCreator,
           score: p.score,
+          isBackInRoom: p.isBackInRoom,
         })),
         phase: "in-room",
       });
@@ -421,6 +441,7 @@ io.on("connection", (socket) => {
           name: p.name,
           isCreator: p.isCreator,
           score: p.score,
+          isBackInRoom: p.isBackInRoom,
         })),
       });
     }
@@ -447,6 +468,12 @@ io.on("connection", (socket) => {
     // Try to transfer creator status
     const success = gameRoom.transferCreator(socket.id, newCreatorId);
     if (success) {
+      // For room-phase, we assume both should be marked as 'back in room'
+      const oldCreator = gameRoom.players.get(socket.id);
+      const newCreator = gameRoom.players.get(newCreatorId);
+      if (oldCreator) oldCreator.isBackInRoom = true;
+      if (newCreator) newCreator.isBackInRoom = true;
+
       io.to(roomCode).emit("creatorTransferred", {
         previousCreatorId: socket.id,
         newCreatorId,
@@ -455,6 +482,7 @@ io.on("connection", (socket) => {
           name: player.name,
           score: player.score,
           isCreator: player.isCreator,
+          isBackInRoom: player.isBackInRoom, // now included!
         })),
       });
     }
@@ -463,6 +491,26 @@ io.on("connection", (socket) => {
   socket.on("startGame", async ({ roomCode }) => {
     const gameRoom = gameRooms.get(roomCode);
     if (!gameRoom) return;
+
+    // Check if the caller is actually the creator
+    if (socket.id !== gameRoom.creator) {
+      socket.emit("error", "Only the Gym Leader can start the game.");
+      return;
+    }
+
+    // Check if all players are back
+    const allBack = Array.from(gameRoom.players.values()).every(
+      (p) => p.isBackInRoom
+    );
+    if (!allBack) {
+      socket.emit(
+        "error",
+        "Not all players have returned to the room. Wait until everyone is back."
+      );
+      return;
+    }
+
+    // If all are back, proceed
     const gameState = await gameRoom.startGame();
     io.to(roomCode).emit("roundStarted", gameState);
   });
@@ -476,6 +524,11 @@ io.on("connection", (socket) => {
 
     // If game has ended, clear all player names
     if (gameState.gameEnded) {
+      // Mark all players as not in the room using gameRoom.players
+      for (const [id, p] of gameRoom.players.entries()) {
+        p.isBackInRoom = false;
+      }
+      // Clear all playerNames from the game room
       gameRoom.clearAllPlayerNames();
     }
 
@@ -542,7 +595,35 @@ io.on("connection", (socket) => {
           name: player.name,
           score: player.score,
           isCreator: player.isCreator,
+          isBackInRoom: player.isBackInRoom,
         })),
+      });
+    }
+  });
+
+  socket.on("playerBackToRoom", ({ roomCode }) => {
+    const gameRoom = gameRooms.get(roomCode);
+    if (!gameRoom) return;
+
+    const player = gameRoom.players.get(socket.id);
+    if (player) {
+      player.isBackInRoom = true;
+      // Send an update only to the sender, setting their phase to "in-room"
+      socket.emit("gameStateUpdate", {
+        roomCode,
+        players: Array.from(gameRoom.players.entries()).map(([id, p]) => ({
+          id,
+          name: p.name,
+          isCreator: p.isCreator,
+          score: p.score,
+          isBackInRoom: p.isBackInRoom,
+        })),
+        phase: "in-room",
+      });
+      // Notify other players that this player's status has changed, without affecting their phase
+      socket.to(roomCode).emit("playerStatusUpdate", {
+        id: socket.id,
+        isBackInRoom: true,
       });
     }
   });
@@ -560,6 +641,7 @@ io.on("connection", (socket) => {
         id,
         name: player.name,
         score: player.score,
+        isBackInRoom: player.isBackInRoom,
       })),
     });
     io.to(playerId).emit("youWereKicked");
@@ -594,6 +676,7 @@ io.on("connection", (socket) => {
               name: p.name,
               score: p.score,
               isCreator: p.isCreator,
+              isBackInRoom: p.isBackInRoom,
             })),
           });
         }
@@ -605,5 +688,5 @@ io.on("connection", (socket) => {
 
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
