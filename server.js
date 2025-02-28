@@ -350,7 +350,6 @@ io.on("connection", (socket) => {
         break;
       }
     }
-
     // Case 1: Name exists in the room
     if (isNameDuplicate) {
       // CRITICAL FIX: We need a reliable way to determine if this is actually a reconnection
@@ -533,7 +532,7 @@ io.on("connection", (socket) => {
     }
 
     io.to(roomCode).emit("roundComplete", {
-      winners: gameState.roundWinners,
+      roundWinners: gameState.roundWinners,
       gameWinners: gameState.gameWinners,
       stat,
       players: gameState.players,
@@ -688,5 +687,5 @@ io.on("connection", (socket) => {
 
 const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`Server running on port ${PORT}`);
 });
