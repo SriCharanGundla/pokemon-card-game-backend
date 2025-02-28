@@ -228,12 +228,12 @@ class GameRoom {
     let highestValue = -1;
     let roundWinners = [];
 
-    // Determine which players to evaluate
+    // Determine which players to evaluate: all active players or just the tie-break players
     const playersToEvaluate = this.inTieBreaker
       ? this.tieBreakPlayers
       : this.getActivePlayers();
 
-    // Find highest value and its holders
+    // Find the highest value and all players who achieved it
     for (const playerId of playersToEvaluate) {
       const player = this.players.get(playerId);
       const value =
@@ -248,31 +248,47 @@ class GameRoom {
       }
     }
 
-    // Update winner logic
     if (!this.inTieBreaker) {
-      const winner = this.players.get(roundWinners[0]);
-      if (winner) {
-        winner.score++;
-        // Only add to winners if they've reached the required score
-        if (winner.score >= this.settings.roundsToWin) {
-          if (!this.winners.includes(roundWinners[0])) {
-            this.winners.push(roundWinners[0]);
+      // In a normal round: if there's a tie, enter tie-break mode;
+      // otherwise, update the clear winner’s score.
+      if (roundWinners.length > 1) {
+        // Tie detected: enter tie-break mode and save tied players
+        this.inTieBreaker = true;
+        this.tieBreakPlayers = roundWinners;
+      } else {
+        // Clear winner: update score as usual.
+        const winner = this.players.get(roundWinners[0]);
+        if (winner) {
+          winner.score++;
+          if (winner.score >= this.settings.roundsToWin) {
+            if (!this.winners.includes(roundWinners[0])) {
+              this.winners.push(roundWinners[0]);
+            }
           }
         }
       }
+    } else {
+      // Already in tie-break mode
+      if (roundWinners.length > 1) {
+        // Still tied: update tie-break players and continue tie-break rounds
+        this.tieBreakPlayers = roundWinners;
+      } else {
+        // Tie-break clear winner: update score and exit tie-break mode.
+        const winner = this.players.get(roundWinners[0]);
+        if (winner) {
+          winner.score++;
+          if (winner.score >= this.settings.roundsToWin) {
+            if (!this.winners.includes(roundWinners[0])) {
+              this.winners.push(roundWinners[0]);
+            }
+          }
+        }
+        this.inTieBreaker = false;
+        this.tieBreakPlayers = [];
+      }
     }
 
-    // Check if game should end - now properly considers required wins
     const gameEnded = this.winners.length >= this.settings.maxWinners;
-
-    // if (gameState.gameEnded) {
-    //   // Mark all players as not in the room
-    //   for (const [id, p] of this.players.entries()) {
-    //     p.isBackInRoom = false;
-    //   }
-    //   // Clear all playerNames if you want (as you already do), or keep them
-    //   // this.clearAllPlayerNames();
-    // }
 
     return {
       roundWinners,
@@ -288,6 +304,8 @@ class GameRoom {
       winners: this.winners,
       gameEnded,
       stat: selectedStat,
+      inTieBreaker: this.inTieBreaker,
+      tieBreakPlayers: this.tieBreakPlayers,
     };
   }
 
